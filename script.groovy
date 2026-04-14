@@ -31,28 +31,45 @@ pipeline {
         stage('CD: Deploy JAR to VM') {
             steps {
                 dir('app-code') {
-                    bat """
-                        @echo off
-                        :: 1. Crucial: Wait 5 minutes for the VM's Startup Script to finish installing Java
-                        echo Waiting 5 minutes for VM initialization...
-                        ping 127.0.0.1 -n 301 > nul
-                        :: 3. Explicitly set the project to avoid "Resource Not Found" errors
-                        call gcloud config set project project-cb063053-ca79-4fea-9b1
+                    script {
+                        // 1. Set the project
+                        bat "call gcloud config set project project-cb063053-ca79-4fea-9b1"
 
-                        :: 3. Copy the JAR using the correct VM name: basic-hello-vm
-                        echo Uploading JAR to VM...
-                        call gcloud compute scp target\\helloworld-gcp-1.0-SNAPSHOT.jar basic-hello-vm:/tmp/app.jar --zone=us-central1-a --quiet
+                        // 2. Fetch the Names (Corrected variable name here)
+                        def vmOutput = bat(
+                                script: "@call gcloud compute instances list --filter=\"name~'basic-hello-vm'\" --format=\"value(name)\"",
+                                returnStdout: true
+                        ).trim()
 
-                        :: 4. Use 'nohup' and redirect logs so the app doesn't die when the SSH session ends
-                        echo Starting Application in background...
-                        call gcloud compute ssh basic-hello-vm --zone=us-central1-a --quiet --command="nohup java -jar /tmp/app.jar > /tmp/app.log 2>&1 &"
-        
-                        echo Deployment command sent successfully.
-                    """
-                }
+                        // Split the string into a list
+                        def vmList = vmOutput.split('\r?\n')
 
-            }
-        }
+                        echo "Found ${vmList.size()} VMs to deploy to: ${vmList}"
+
+                        // 3. Wait for initialization
+                        echo "Waiting 5 minutes for all VMs to initialize Java..."
+                        bat "ping 127.0.0.1 -n 301 > nul"
+
+                        // 4. Loop through each VM name
+                        for (vmName in vmList) {
+                            if (vmName.trim()) {
+                                echo "--- Deploying to VM: ${vmName} ---"
+
+                                // Copy the JAR using VM name
+                                bat "call gcloud compute scp target\\helloworld-gcp-1.0-SNAPSHOT.jar ${vmName}:/tmp/app.jar --zone=us-central1-a --quiet"
+
+                                // SSH and start using VM name
+                                bat """
+                            call gcloud compute ssh ${vmName} --zone=us-central1-a --quiet --command="sudo fuser -k 8081/tcp || true && nohup java -jar /tmp/app.jar > /tmp/app.log 2>&1 &"
+                        """
+
+                                echo "Deployment to ${vmName} complete."
+                            }
+                        } // End of For Loop
+                    } // End of Script
+                } // End of Dir
+            } // End of Steps
+        } // End of Stage
 
         stage('Cleanup: Manual Approval') {
             steps {
